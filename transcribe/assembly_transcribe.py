@@ -37,25 +37,44 @@ class TranscriptionApp:
         self.root.dnd_bind('<<Drop>>', self.drop_files)
         self.transcribed_files: List[Path] = []
 
+        print("TranscriptionApp initialized.")
+
     def create_widgets(self) -> None:
         """Creates and places the widgets in the Tkinter window."""
         self.frame = ttk.Frame(self.root, padding="10")
         self.frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        self.drop_area = tk.Listbox(self.frame, selectmode=tk.MULTIPLE, height=10)
-        self.drop_area.grid(row=0, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
+        self.drop_area_label = ttk.Label(self.frame, text="Files to Transcribe")
+        self.drop_area_label.grid(row=0, column=0, columnspan=2, pady=(0, 5), sticky=(tk.W, tk.E))
 
-        self.progress = ttk.Progressbar(self.frame, mode='determinate')
-        self.progress.grid(row=1, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
+        self.drop_area = tk.Listbox(self.frame, selectmode=tk.MULTIPLE, height=10)
+        self.drop_area.grid(row=1, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
+
+        self.clear_button = ttk.Button(self.frame, text="Clear Files", command=self.clear_files)
+        self.clear_button.grid(row=2, column=0, pady=5, sticky=(tk.W, tk.E))
 
         self.transcribe_button = ttk.Button(self.frame, text="Transcribe", command=self.transcribe_files)
-        self.transcribe_button.grid(row=2, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
+        self.transcribe_button.grid(row=2, column=1, pady=5, sticky=(tk.W, tk.E))
+
+        self.progress = ttk.Progressbar(self.frame, mode='determinate')
+        self.progress.grid(row=3, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
+
+        self.output_area_label = ttk.Label(self.frame, text="Transcription Results")
+        self.output_area_label.grid(row=4, column=0, columnspan=2, pady=(5, 0), sticky=(tk.W, tk.E))
 
         self.output_area = tk.Listbox(self.frame, height=10)
-        self.output_area.grid(row=3, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
+        self.output_area.grid(row=5, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
 
-        self.frame.rowconfigure(0, weight=1)
+        self.frame.rowconfigure(1, weight=1)
         self.frame.columnconfigure(0, weight=1)
+        self.frame.columnconfigure(1, weight=1)
+
+        print("Widgets created.")
+
+    def clear_files(self) -> None:
+        """Clears the list of files to transcribe."""
+        self.drop_area.delete(0, tk.END)
+        print("Files cleared.")
 
     def drop_files(self, event: tk.Event) -> None:
         """Handles file drop events and adds valid files to the drop_area Listbox.
@@ -73,6 +92,7 @@ class TranscriptionApp:
         for file in files:
             if file.endswith(('.mp3', '.wav', '.mp4', '.m4a')):
                 self.drop_area.insert(tk.END, file)
+                print(f"File added: {file}")
             else:
                 messagebox.showerror("Invalid File Type", f"Unsupported file type: {file}")
 
@@ -93,6 +113,8 @@ class TranscriptionApp:
         self.progress['value'] = 0
         self.progress['maximum'] = len(files)
 
+        print("Transcription started.")
+
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(self.transcribe_file, file) for file in files]
             for future in futures:
@@ -111,6 +133,7 @@ class TranscriptionApp:
             Exception: If an error occurs during transcription.
         """
         file_path = Path(file_path)
+        print(f"Transcribing file: {file_path}")
         transcript = self.transcriber.transcribe(file_path.as_posix())
         if transcript.status == aai.TranscriptStatus.error:
             raise Exception(transcript.error)
@@ -119,10 +142,11 @@ class TranscriptionApp:
         with open(output_path, 'w') as f:
             f.write(transcript.text)
         
+        print(f"Transcription completed for file: {file_path}")
         return output_path
 
     def update_progress(self, future: Future) -> None:
-        """Updates the progress bar and adds the output file to the output_area Listbox.
+        """Updates the progress bar and adds a 'done' message to the output_area Listbox.
 
         Args:
             future: The Future object representing the transcription task.
@@ -134,13 +158,14 @@ class TranscriptionApp:
         Raises:
             None
         """
-        self.progress['value'] += 1
+        print("update_progress()")
+        # self.progress['value'] += 1
         try:
-            output_file = future.result()
-            self.output_area.insert(tk.END, output_file)
-            self.transcribed_files.append(output_file)
-            if self.progress['value'] == self.progress['maximum']:
-                self.create_xml_summary()
+            # future.result()
+            # self.output_area.insert(tk.END, "Transcription done")
+            print("Progress updated. Transcription done.")
+            # if self.progress['value'] == self.progress['maximum']:
+                # self.create_xml_summary()
         except Exception as e:
             messagebox.showerror("Transcription Error", str(e))
 
@@ -171,8 +196,4 @@ class TranscriptionApp:
         tree.write(summary_path, encoding="utf-8", xml_declaration=True)
 
         self.output_area.insert(tk.END, f"Summary XML created at {summary_path}")
-
-if __name__ == "__main__":
-    root = tkdnd.Tk()
-    app = TranscriptionApp(root)
-    root.mainloop()
+        print(f"XML summary created at: {summary_path}")
