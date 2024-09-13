@@ -10,6 +10,9 @@ import xml.etree.ElementTree as ET
 import threading
 import sounddevice as sd
 import soundfile as sf
+import numpy as np  # Required for handling audio data
+import time
+import queue
 
 class TranscriptionApp:
     def __init__(self, root: tk.Tk) -> None:
@@ -118,6 +121,7 @@ class TranscriptionApp:
         self.is_recording = True
         self.record_button.config(text="Stop")
         self.audio_data = []  # Reset audio data
+        self.stop_recording_event = threading.Event()
         self.recording_thread = threading.Thread(target=self.record_audio)
         self.recording_thread.start()
         print("Recording started.")
@@ -126,6 +130,7 @@ class TranscriptionApp:
         """Stops recording audio and initiates transcription."""
         self.is_recording = False
         self.record_button.config(text="Record")
+        self.stop_recording_event.set()  # Signal the recording thread to stop
         self.recording_thread.join()  # Wait for the recording thread to finish
         print("Recording stopped.")
         self.save_and_transcribe_recording()
@@ -134,16 +139,13 @@ class TranscriptionApp:
         """Records audio in a separate thread and stores the data."""
         def callback(indata, frames, time, status):
             """Callback function to collect audio data."""
-            if self.is_recording:
-                self.audio_data.append(indata.copy())
-            else:
-                raise sd.CallbackStop()
+            self.audio_data.append(indata.copy())
 
-        try:
-            with sd.InputStream(samplerate=self.samplerate, channels=1, callback=callback):
-                sd.sleep(int(1e6))  # Sleep for a long time, recording stops via callback
-        except sd.CallbackStop:
-            pass  # Recording stopped
+        with sd.InputStream(samplerate=self.samplerate, channels=1, callback=callback):
+            while not self.stop_recording_event.is_set():
+                time.sleep(0.1)  # Sleep to prevent high CPU usage
+
+        print("Recording thread finished.")
 
     def save_and_transcribe_recording(self) -> None:
         """Saves the recorded audio to a file and transcribes it."""
@@ -308,8 +310,6 @@ class TranscriptionApp:
         print(f"XML summary created at: {summary_path}")
 
 if __name__ == "__main__":
-    import numpy as np  # Required for handling audio data
-
     root = tkdnd.Tk()
     app = TranscriptionApp(root)
     root.mainloop()
