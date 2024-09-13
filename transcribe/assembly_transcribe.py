@@ -1,11 +1,11 @@
 import os
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, messagebox
 import assemblyai as aai
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 import tkinterdnd2 as tkdnd
-from typing import List, Optional
+from typing import List
 import xml.etree.ElementTree as ET
 import threading
 import sounddevice as sd
@@ -22,33 +22,41 @@ class TranscriptionApp:
             - Button to record and stop audio recording.
             - Pause/Resume button to pause and resume recording.
             - Automatic transcription upon stopping.
-            - Transcript displayed in a new window with a "Tidy Up" button.
+            - Transcript displayed in a new window with a "Tidy Up" button and additional instructions box.
 
         Right Panel:
             - Existing functionality to drop audio files for transcription.
 
         AI Integration:
-            - Uses OpenAI's GPT-4o-mini model to tidy up punctuation and capitalization.
+            - Uses OpenAI's latest SDK to tidy up punctuation and capitalization based on user instructions.
 
         Preconditions:
-            The environment variable 'assemblyAI_key' must be set with a valid API key for both AssemblyAI and OpenAI.
+            The environment variables 'assemblyAI_key' and 'OPENAI_API_KEY' must be set with valid API keys.
 
         Args:
             root: The root Tkinter window.
 
         Raises:
-            EnvironmentError: If the 'assemblyAI_key' environment variable is not set.
+            EnvironmentError: If the API keys are not set.
         """
         self.root = root
         self.root.title("Audio Transcriber")
 
-        self.api_key = os.getenv("assemblyAI_key")
-        if not self.api_key:
-            raise EnvironmentError("API key for AssemblyAI is not set in environment variables.")
+        # Get the API keys from environment variables
+        self.aai_api_key = os.getenv("assemblyAI_key")
+        if not self.aai_api_key:
+            raise EnvironmentError("AssemblyAI API key is not set in environment variables.")
+
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not self.openai_api_key:
+            raise EnvironmentError("OpenAI API key is not set in environment variables.")
 
         # Set up API keys for AssemblyAI and OpenAI
-        aai.settings.api_key = self.api_key
-        openai.api_key = self.api_key
+        aai.settings.api_key = self.aai_api_key
+        openai.api_key = self.openai_api_key
+
+        # Initialize OpenAI client
+        self.openai_client = openai.OpenAI()
 
         self.transcriber = aai.Transcriber()
 
@@ -209,7 +217,7 @@ class TranscriptionApp:
             messagebox.showerror("Transcription Error", str(e))
 
     def display_transcript(self, text: str) -> None:
-        """Displays the transcript in a new window with a "Tidy Up" button.
+        """Displays the transcript in a new window with a "Tidy Up" button and additional instructions.
 
         Args:
             text: The transcribed text to display.
@@ -217,62 +225,111 @@ class TranscriptionApp:
         transcript_window = tk.Toplevel(self.root)
         transcript_window.title("Transcript")
 
+        # Transcript text widget
         text_widget = tk.Text(transcript_window, wrap='word')
         text_widget.insert(tk.END, text)
         text_widget.config(state=tk.NORMAL)  # Make editable for updates
         text_widget.pack(expand=True, fill='both')
 
+        # Additional Instructions Label
+        instructions_label = ttk.Label(transcript_window, text="Additional Instructions:")
+        instructions_label.pack()
+
+        # Additional Instructions Text Widget
+        instructions_widget = tk.Text(transcript_window, height=5, wrap='word')
+        instructions_widget.pack(expand=False, fill='x')
+
         # Add "Tidy Up" button
         tidy_button = ttk.Button(
             transcript_window,
             text="Tidy Up",
-            command=lambda: self.tidy_transcript(text_widget)
+            command=lambda: self.tidy_transcript(text_widget, instructions_widget)
         )
         tidy_button.pack(pady=5)
 
-    def tidy_transcript(self, text_widget: tk.Text) -> None:
-        """Tidies up the transcript by fixing punctuation and capitalization using AI.
+    def tidy_transcript(self, text_widget: tk.Text, instructions_widget: tk.Text) -> None:
+        """Tidies up the transcript using AI, with additional user instructions.
 
         Args:
             text_widget: The Text widget containing the transcript.
+            instructions_widget: The Text widget containing additional user instructions.
 
         Side effects:
             - Updates the text_widget with the tidied transcript.
             - Displays an error message if the AI call fails.
         """
         # Get the current text from the text widget
-        text = text_widget.get("1.0", tk.END).strip()
+        transcript_text = text_widget.get("1.0", tk.END).strip()
 
-        # Define the system prompt for the AI
-        system_prompt = (
+        # Get additional instructions from the instructions widget
+        additional_instructions = instructions_widget.get("1.0", tk.END).strip()
+
+        # Define the assistant's base instructions
+        assistant_instructions = (
             "You are an assistant that tidies up transcripts by fixing punctuation and capitalization, "
-            "without changing the wording or meaning. Please correct the punctuation and capitalization "
-            "in the text provided, without changing anything more than necessary."
+            "without changing the wording or meaning."
         )
 
-        # Prepare the messages for the AI
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ]
+        # Combine base instructions with additional instructions
+        if additional_instructions:
+            assistant_instructions += f" {additional_instructions}"
 
         try:
-            # Call OpenAI API
-            response = openai.ChatCompletion.create(
+            # Set up the OpenAI client
+            client = self.openai_client
+
+            # Create an assistant
+            assistant = client.beta.assistants.create(
+                name="Transcript Tidy Assistant",
+                instructions=assistant_instructions,
                 model="gpt-4o-mini",
-                messages=messages,
-                max_tokens=4000,
-                temperature=0
             )
 
-            # Get the assistant's reply
-            reply = response['choices'][0]['message']['content']
+            # Create a thread
+            thread = client.beta.threads.create()
 
-            # Update the text widget with the tidied-up text
-            text_widget.config(state=tk.NORMAL)
-            text_widget.delete("1.0", tk.END)
-            text_widget.insert(tk.END, reply)
-            text_widget.config(state=tk.DISABLED)
+            # Send the transcript as a user message
+            client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=transcript_text,
+            )
+
+            # Create and poll a run
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=thread.id,
+                assistant_id=assistant.id,
+                instructions="",  # Additional per-run instructions if needed
+            )
+
+            print("Run completed with status: " + run.status)
+
+            if run.status == "completed":
+                # Retrieve messages from the thread
+                messages = client.beta.threads.messages.list(thread_id=thread.id)
+
+                # Extract the assistant's reply
+                for message in messages:
+                    if message.role == "assistant":
+                        # The content is a list of content parts
+                        content_parts = message.content
+                        # Extract the text content
+                        reply = ""
+                        for part in content_parts:
+                            if part.type == "text":
+                                reply += part.text.value
+
+                        # Update the text widget with the tidied-up text
+                        text_widget.config(state=tk.NORMAL)
+                        text_widget.delete("1.0", tk.END)
+                        text_widget.insert(tk.END, reply)
+                        text_widget.config(state=tk.DISABLED)
+                        break
+            else:
+                messagebox.showerror("Error", f"Run did not complete successfully. Status: {run.status}")
+
+            # Delete the assistant to clean up
+            client.beta.assistants.delete(assistant.id)
 
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
