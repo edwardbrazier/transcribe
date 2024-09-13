@@ -1,4 +1,4 @@
-from assembly_transcribe import TranscriptionApp
+from .assembly_transcribe import TranscriptionApp
 import tkinterdnd2 as tkdnd
 
 if __name__ == "__main__":
