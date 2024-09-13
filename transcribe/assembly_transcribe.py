@@ -12,14 +12,14 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np  # Required for handling audio data
 import time
-import queue
 
 class TranscriptionApp:
     def __init__(self, root: tk.Tk) -> None:
-        """Initializes the TranscriptionApp with two panels.
+        """Initializes the TranscriptionApp with two panels and adds pause functionality.
 
         Left Panel:
             - Button to record and stop audio recording.
+            - Pause/Resume button to pause and resume recording.
             - Automatic transcription upon stopping.
             - Transcript displayed in a new window.
 
@@ -48,6 +48,7 @@ class TranscriptionApp:
 
         # Initialize recording attributes
         self.is_recording = False
+        self.is_paused = False
         self.recording_thread = None
         self.audio_data = []
         self.samplerate = 44100  # Standard sampling rate for audio
@@ -80,6 +81,9 @@ class TranscriptionApp:
         # Left Panel Widgets
         self.record_button = ttk.Button(self.left_frame, text="Record", command=self.toggle_recording)
         self.record_button.grid(row=0, column=0, pady=5, sticky=(tk.W, tk.E))
+
+        self.pause_button = ttk.Button(self.left_frame, text="Pause", command=self.toggle_pause, state='disabled')
+        self.pause_button.grid(row=1, column=0, pady=5, sticky=(tk.W, tk.E))
 
         # Right Panel Widgets (Existing functionality)
         self.drop_area_label = ttk.Label(self.right_frame, text="Files to Transcribe")
@@ -119,7 +123,9 @@ class TranscriptionApp:
     def start_recording(self) -> None:
         """Starts recording audio from the microphone."""
         self.is_recording = True
+        self.is_paused = False
         self.record_button.config(text="Stop")
+        self.pause_button.config(state='normal', text="Pause")
         self.audio_data = []  # Reset audio data
         self.stop_recording_event = threading.Event()
         self.recording_thread = threading.Thread(target=self.record_audio)
@@ -129,17 +135,31 @@ class TranscriptionApp:
     def stop_recording(self) -> None:
         """Stops recording audio and initiates transcription."""
         self.is_recording = False
+        self.is_paused = False
         self.record_button.config(text="Record")
+        self.pause_button.config(state='disabled', text="Pause")
         self.stop_recording_event.set()  # Signal the recording thread to stop
         self.recording_thread.join()  # Wait for the recording thread to finish
         print("Recording stopped.")
         self.save_and_transcribe_recording()
 
+    def toggle_pause(self) -> None:
+        """Toggles the pause state between pause and resume."""
+        if not self.is_paused:
+            self.is_paused = True
+            self.pause_button.config(text="Resume")
+            print("Recording paused.")
+        else:
+            self.is_paused = False
+            self.pause_button.config(text="Pause")
+            print("Recording resumed.")
+
     def record_audio(self) -> None:
         """Records audio in a separate thread and stores the data."""
         def callback(indata, frames, time, status):
             """Callback function to collect audio data."""
-            self.audio_data.append(indata.copy())
+            if not self.is_paused:
+                self.audio_data.append(indata.copy())
 
         with sd.InputStream(samplerate=self.samplerate, channels=1, callback=callback):
             while not self.stop_recording_event.is_set():
@@ -313,3 +333,4 @@ if __name__ == "__main__":
     root = tkdnd.Tk()
     app = TranscriptionApp(root)
     root.mainloop()
+
