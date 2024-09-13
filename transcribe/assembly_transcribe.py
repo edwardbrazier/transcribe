@@ -12,22 +12,26 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np  # Required for handling audio data
 import time
+import openai  # For interacting with the OpenAI API
 
 class TranscriptionApp:
     def __init__(self, root: tk.Tk) -> None:
-        """Initializes the TranscriptionApp with two panels and adds pause functionality.
+        """Initializes the TranscriptionApp with two panels and AI integration.
 
         Left Panel:
             - Button to record and stop audio recording.
             - Pause/Resume button to pause and resume recording.
             - Automatic transcription upon stopping.
-            - Transcript displayed in a new window.
+            - Transcript displayed in a new window with a "Tidy Up" button.
 
         Right Panel:
             - Existing functionality to drop audio files for transcription.
 
+        AI Integration:
+            - Uses OpenAI's GPT-4o-mini model to tidy up punctuation and capitalization.
+
         Preconditions:
-            The environment variable 'assemblyAI_key' must be set with a valid AssemblyAI API key.
+            The environment variable 'assemblyAI_key' must be set with a valid API key for both AssemblyAI and OpenAI.
 
         Args:
             root: The root Tkinter window.
@@ -42,7 +46,9 @@ class TranscriptionApp:
         if not self.api_key:
             raise EnvironmentError("API key for AssemblyAI is not set in environment variables.")
 
+        # Set up API keys for AssemblyAI and OpenAI
         aai.settings.api_key = self.api_key
+        openai.api_key = self.api_key
 
         self.transcriber = aai.Transcriber()
 
@@ -203,7 +209,7 @@ class TranscriptionApp:
             messagebox.showerror("Transcription Error", str(e))
 
     def display_transcript(self, text: str) -> None:
-        """Displays the transcript in a new window.
+        """Displays the transcript in a new window with a "Tidy Up" button.
 
         Args:
             text: The transcribed text to display.
@@ -213,8 +219,63 @@ class TranscriptionApp:
 
         text_widget = tk.Text(transcript_window, wrap='word')
         text_widget.insert(tk.END, text)
-        text_widget.config(state=tk.DISABLED)  # Make read-only
+        text_widget.config(state=tk.NORMAL)  # Make editable for updates
         text_widget.pack(expand=True, fill='both')
+
+        # Add "Tidy Up" button
+        tidy_button = ttk.Button(
+            transcript_window,
+            text="Tidy Up",
+            command=lambda: self.tidy_transcript(text_widget)
+        )
+        tidy_button.pack(pady=5)
+
+    def tidy_transcript(self, text_widget: tk.Text) -> None:
+        """Tidies up the transcript by fixing punctuation and capitalization using AI.
+
+        Args:
+            text_widget: The Text widget containing the transcript.
+
+        Side effects:
+            - Updates the text_widget with the tidied transcript.
+            - Displays an error message if the AI call fails.
+        """
+        # Get the current text from the text widget
+        text = text_widget.get("1.0", tk.END).strip()
+
+        # Define the system prompt for the AI
+        system_prompt = (
+            "You are an assistant that tidies up transcripts by fixing punctuation and capitalization, "
+            "without changing the wording or meaning. Please correct the punctuation and capitalization "
+            "in the text provided, without changing anything more than necessary."
+        )
+
+        # Prepare the messages for the AI
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ]
+
+        try:
+            # Call OpenAI API
+            response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                max_tokens=4000,
+                temperature=0
+            )
+
+            # Get the assistant's reply
+            reply = response['choices'][0]['message']['content']
+
+            # Update the text widget with the tidied-up text
+            text_widget.config(state=tk.NORMAL)
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert(tk.END, reply)
+            text_widget.config(state=tk.DISABLED)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
     def clear_files(self) -> None:
         """Clears the list of files to transcribe."""
@@ -333,4 +394,3 @@ if __name__ == "__main__":
     root = tkdnd.Tk()
     app = TranscriptionApp(root)
     root.mainloop()
-
