@@ -7,10 +7,21 @@ from pathlib import Path
 import tkinterdnd2 as tkdnd
 from typing import List, Optional
 import xml.etree.ElementTree as ET
+import threading
+import sounddevice as sd
+import soundfile as sf
 
 class TranscriptionApp:
     def __init__(self, root: tk.Tk) -> None:
-        """Initializes the TranscriptionApp.
+        """Initializes the TranscriptionApp with two panels.
+
+        Left Panel:
+            - Button to record and stop audio recording.
+            - Automatic transcription upon stopping.
+            - Transcript displayed in a new window.
+
+        Right Panel:
+            - Existing functionality to drop audio files for transcription.
 
         Preconditions:
             The environment variable 'assemblyAI_key' must be set with a valid AssemblyAI API key.
@@ -32,6 +43,12 @@ class TranscriptionApp:
 
         self.transcriber = aai.Transcriber()
 
+        # Initialize recording attributes
+        self.is_recording = False
+        self.recording_thread = None
+        self.audio_data = []
+        self.samplerate = 44100  # Standard sampling rate for audio
+
         self.create_widgets()
         self.root.drop_target_register(tkdnd.DND_FILES)
         self.root.dnd_bind('<<Drop>>', self.drop_files)
@@ -40,36 +57,142 @@ class TranscriptionApp:
         print("TranscriptionApp initialized.")
 
     def create_widgets(self) -> None:
-        """Creates and places the widgets in the Tkinter window."""
-        self.frame = ttk.Frame(self.root, padding="10")
-        self.frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        """Creates and places the widgets in the Tkinter window, including two panels."""
+        # Main frame
+        self.main_frame = ttk.Frame(self.root, padding="10")
+        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        self.drop_area_label = ttk.Label(self.frame, text="Files to Transcribe")
+        # Left Panel Frame
+        self.left_frame = ttk.Frame(self.main_frame, padding="10")
+        self.left_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Right Panel Frame
+        self.right_frame = ttk.Frame(self.main_frame, padding="10")
+        self.right_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Configure weights
+        self.main_frame.columnconfigure(0, weight=1)
+        self.main_frame.columnconfigure(1, weight=1)
+
+        # Left Panel Widgets
+        self.record_button = ttk.Button(self.left_frame, text="Record", command=self.toggle_recording)
+        self.record_button.grid(row=0, column=0, pady=5, sticky=(tk.W, tk.E))
+
+        # Right Panel Widgets (Existing functionality)
+        self.drop_area_label = ttk.Label(self.right_frame, text="Files to Transcribe")
         self.drop_area_label.grid(row=0, column=0, columnspan=2, pady=(0, 5), sticky=(tk.W, tk.E))
 
-        self.drop_area = tk.Listbox(self.frame, selectmode=tk.MULTIPLE, height=10)
+        self.drop_area = tk.Listbox(self.right_frame, selectmode=tk.MULTIPLE, height=10)
         self.drop_area.grid(row=1, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
 
-        self.clear_button = ttk.Button(self.frame, text="Clear Files", command=self.clear_files)
+        self.clear_button = ttk.Button(self.right_frame, text="Clear Files", command=self.clear_files)
         self.clear_button.grid(row=2, column=0, pady=5, sticky=(tk.W, tk.E))
 
-        self.transcribe_button = ttk.Button(self.frame, text="Transcribe", command=self.transcribe_files)
+        self.transcribe_button = ttk.Button(self.right_frame, text="Transcribe", command=self.transcribe_files)
         self.transcribe_button.grid(row=2, column=1, pady=5, sticky=(tk.W, tk.E))
 
-        self.progress = ttk.Progressbar(self.frame, mode='determinate')
+        self.progress = ttk.Progressbar(self.right_frame, mode='determinate')
         self.progress.grid(row=3, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
 
-        self.output_area_label = ttk.Label(self.frame, text="Transcription Results")
+        self.output_area_label = ttk.Label(self.right_frame, text="Transcription Results")
         self.output_area_label.grid(row=4, column=0, columnspan=2, pady=(5, 0), sticky=(tk.W, tk.E))
 
-        self.output_area = tk.Listbox(self.frame, height=10)
+        self.output_area = tk.Listbox(self.right_frame, height=10)
         self.output_area.grid(row=5, column=0, columnspan=2, pady=5, sticky=(tk.W, tk.E))
 
-        self.frame.rowconfigure(1, weight=1)
-        self.frame.columnconfigure(0, weight=1)
-        self.frame.columnconfigure(1, weight=1)
+        self.right_frame.rowconfigure(1, weight=1)
+        self.right_frame.columnconfigure(0, weight=1)
+        self.right_frame.columnconfigure(1, weight=1)
 
         print("Widgets created.")
+
+    def toggle_recording(self) -> None:
+        """Toggles the recording state between start and stop."""
+        if not self.is_recording:
+            self.start_recording()
+        else:
+            self.stop_recording()
+
+    def start_recording(self) -> None:
+        """Starts recording audio from the microphone."""
+        self.is_recording = True
+        self.record_button.config(text="Stop")
+        self.audio_data = []  # Reset audio data
+        self.recording_thread = threading.Thread(target=self.record_audio)
+        self.recording_thread.start()
+        print("Recording started.")
+
+    def stop_recording(self) -> None:
+        """Stops recording audio and initiates transcription."""
+        self.is_recording = False
+        self.record_button.config(text="Record")
+        self.recording_thread.join()  # Wait for the recording thread to finish
+        print("Recording stopped.")
+        self.save_and_transcribe_recording()
+
+    def record_audio(self) -> None:
+        """Records audio in a separate thread and stores the data."""
+        def callback(indata, frames, time, status):
+            """Callback function to collect audio data."""
+            if self.is_recording:
+                self.audio_data.append(indata.copy())
+            else:
+                raise sd.CallbackStop()
+
+        try:
+            with sd.InputStream(samplerate=self.samplerate, channels=1, callback=callback):
+                sd.sleep(int(1e6))  # Sleep for a long time, recording stops via callback
+        except sd.CallbackStop:
+            pass  # Recording stopped
+
+    def save_and_transcribe_recording(self) -> None:
+        """Saves the recorded audio to a file and transcribes it."""
+        if not self.audio_data:
+            messagebox.showwarning("Recording Error", "No audio data recorded.")
+            return
+
+        # Concatenate all recorded audio data
+        audio_data = np.concatenate(self.audio_data, axis=0)
+
+        # Save the audio data to a WAV file
+        recorded_file_path = Path("recorded_audio.wav")
+        sf.write(recorded_file_path, audio_data, self.samplerate)
+        print(f"Audio saved to {recorded_file_path}")
+
+        # Transcribe the recorded audio
+        threading.Thread(target=self.transcribe_recorded_file, args=(recorded_file_path,)).start()
+
+    def transcribe_recorded_file(self, file_path: Path) -> None:
+        """Transcribes the recorded audio file and displays the transcript.
+
+        Args:
+            file_path: The path to the recorded audio file.
+        """
+        try:
+            print(f"Transcribing recorded file: {file_path}")
+            transcript = self.transcriber.transcribe(file_path.as_posix())
+            if transcript.status == aai.TranscriptStatus.error:
+                raise Exception(transcript.error)
+
+            # Display the transcript in a new window
+            self.display_transcript(transcript.text)
+            print(f"Transcription completed for recorded file: {file_path}")
+        except Exception as e:
+            messagebox.showerror("Transcription Error", str(e))
+
+    def display_transcript(self, text: str) -> None:
+        """Displays the transcript in a new window.
+
+        Args:
+            text: The transcribed text to display.
+        """
+        transcript_window = tk.Toplevel(self.root)
+        transcript_window.title("Transcript")
+
+        text_widget = tk.Text(transcript_window, wrap='word')
+        text_widget.insert(tk.END, text)
+        text_widget.config(state=tk.DISABLED)  # Make read-only
+        text_widget.pack(expand=True, fill='both')
 
     def clear_files(self) -> None:
         """Clears the list of files to transcribe."""
@@ -84,9 +207,6 @@ class TranscriptionApp:
 
         Side effects:
             Displays an error message if an unsupported file type is dropped.
-
-        Raises:
-            None
         """
         files = self.root.tk.splitlist(event.data)
         for file in files:
@@ -99,17 +219,15 @@ class TranscriptionApp:
     def transcribe_files(self) -> None:
         """Transcribes the files listed in the drop_area Listbox.
 
-        Preconditions:
-            Files must be added to the drop_area Listbox.
-
         Side effects:
             Updates the progress bar and the output_area Listbox with the transcription results.
-
-        Raises:
-            None
         """
         self.transcribed_files = []
         files = self.drop_area.get(0, tk.END)
+        if not files:
+            messagebox.showwarning("No Files", "Please add files to transcribe.")
+            return
+
         self.progress['value'] = 0
         self.progress['maximum'] = len(files)
 
@@ -128,20 +246,18 @@ class TranscriptionApp:
 
         Returns:
             The path to the output text file.
-
-        Raises:
-            Exception: If an error occurs during transcription.
         """
         file_path = Path(file_path)
         print(f"Transcribing file: {file_path}")
         transcript = self.transcriber.transcribe(file_path.as_posix())
         if transcript.status == aai.TranscriptStatus.error:
             raise Exception(transcript.error)
-        
+
         output_path = file_path.with_suffix(".txt")
         with open(output_path, 'w') as f:
             f.write(transcript.text)
-        
+
+        self.transcribed_files.append(output_path)
         print(f"Transcription completed for file: {file_path}")
         return output_path
 
@@ -154,18 +270,14 @@ class TranscriptionApp:
         Side effects:
             Updates the progress bar and the output_area Listbox.
             Displays an error message if an exception occurs.
-
-        Raises:
-            None
         """
-        print("update_progress()")
-        # self.progress['value'] += 1
         try:
-            # future.result()
-            # self.output_area.insert(tk.END, "Transcription done")
-            print("Progress updated. Transcription done.")
-            # if self.progress['value'] == self.progress['maximum']:
-                # self.create_xml_summary()
+            result = future.result()
+            self.progress['value'] += 1
+            self.output_area.insert(tk.END, f"Transcription done: {result}")
+            print(f"Progress updated. Transcription done: {result}")
+            if self.progress['value'] == self.progress['maximum']:
+                self.create_xml_summary()
         except Exception as e:
             messagebox.showerror("Transcription Error", str(e))
 
@@ -174,9 +286,6 @@ class TranscriptionApp:
 
         Side effects:
             Creates an XML file in the directory of the first transcribed file.
-
-        Raises:
-            None
         """
         if not self.transcribed_files:
             return
@@ -186,7 +295,7 @@ class TranscriptionApp:
             file_path = Path(file_path)
             with open(file_path, 'r') as f:
                 transcript_text = f.read()
-            
+
             transcription_element = ET.SubElement(root_element, "Transcription")
             ET.SubElement(transcription_element, "FilePath").text = str(file_path.with_suffix(file_path.suffix))
             ET.SubElement(transcription_element, "Content").text = transcript_text
@@ -197,3 +306,10 @@ class TranscriptionApp:
 
         self.output_area.insert(tk.END, f"Summary XML created at {summary_path}")
         print(f"XML summary created at: {summary_path}")
+
+if __name__ == "__main__":
+    import numpy as np  # Required for handling audio data
+
+    root = tkdnd.Tk()
+    app = TranscriptionApp(root)
+    root.mainloop()
