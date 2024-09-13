@@ -13,6 +13,7 @@ import soundfile as sf
 import numpy as np  # Required for handling audio data
 import time
 import openai  # For interacting with the OpenAI API
+import difflib  # For comparing transcripts and marking changes
 
 class TranscriptionApp:
     def __init__(self, root: tk.Tk) -> None:
@@ -22,7 +23,10 @@ class TranscriptionApp:
             - Button to record and stop audio recording.
             - Pause/Resume button to pause and resume recording.
             - Automatic transcription upon stopping.
-            - Transcript displayed in a new window with a "Tidy Up" button and additional instructions box.
+            - Transcript displayed in a new window with editing capabilities.
+            - "Tidy Up" button with additional instructions box.
+            - Changes after AI transformation are marked.
+            - "Undo" and "Copy" buttons added.
 
         Right Panel:
             - Existing functionality to drop audio files for transcription.
@@ -51,7 +55,7 @@ class TranscriptionApp:
         if not self.openai_api_key:
             raise EnvironmentError("OpenAI API key is not set in environment variables.")
 
-        # Set up API keys for AssemblyAI and OpenAI
+        # Set up API keys
         aai.settings.api_key = self.aai_api_key
         openai.api_key = self.openai_api_key
 
@@ -66,6 +70,9 @@ class TranscriptionApp:
         self.recording_thread = None
         self.audio_data = []
         self.samplerate = 44100  # Standard sampling rate for audio
+
+        # Store previous transcript versions
+        self.previous_transcript = ""
 
         self.create_widgets()
         self.root.drop_target_register(tkdnd.DND_FILES)
@@ -217,7 +224,7 @@ class TranscriptionApp:
             messagebox.showerror("Transcription Error", str(e))
 
     def display_transcript(self, text: str) -> None:
-        """Displays the transcript in a new window with a "Tidy Up" button and additional instructions.
+        """Displays the transcript in a new window with editing capabilities.
 
         Args:
             text: The transcribed text to display.
@@ -225,44 +232,64 @@ class TranscriptionApp:
         transcript_window = tk.Toplevel(self.root)
         transcript_window.title("Transcript")
 
+        # Store the original transcript
+        self.previous_transcript = text
+
         # Transcript text widget
-        text_widget = tk.Text(transcript_window, wrap='word')
-        text_widget.insert(tk.END, text)
-        text_widget.config(state=tk.NORMAL)  # Make editable for updates
-        text_widget.pack(expand=True, fill='both')
+        self.text_widget = tk.Text(transcript_window, wrap='word')
+        self.text_widget.insert(tk.END, text)
+        self.text_widget.pack(expand=True, fill='both')
 
         # Additional Instructions Label
         instructions_label = ttk.Label(transcript_window, text="Additional Instructions:")
         instructions_label.pack()
 
         # Additional Instructions Text Widget
-        instructions_widget = tk.Text(transcript_window, height=5, wrap='word')
-        instructions_widget.pack(expand=False, fill='x')
+        self.instructions_widget = tk.Text(transcript_window, height=5, wrap='word')
+        self.instructions_widget.pack(expand=False, fill='x')
+
+        # Buttons Frame
+        buttons_frame = ttk.Frame(transcript_window)
+        buttons_frame.pack(pady=5)
 
         # Add "Tidy Up" button
         tidy_button = ttk.Button(
-            transcript_window,
+            buttons_frame,
             text="Tidy Up",
-            command=lambda: self.tidy_transcript(text_widget, instructions_widget)
+            command=self.tidy_transcript
         )
-        tidy_button.pack(pady=5)
+        tidy_button.grid(row=0, column=0, padx=5)
 
-    def tidy_transcript(self, text_widget: tk.Text, instructions_widget: tk.Text) -> None:
+        # Add "Undo" button
+        undo_button = ttk.Button(
+            buttons_frame,
+            text="Undo",
+            command=self.undo_transcript
+        )
+        undo_button.grid(row=0, column=1, padx=5)
+
+        # Add "Copy" button
+        copy_button = ttk.Button(
+            buttons_frame,
+            text="Copy",
+            command=self.copy_transcript
+        )
+        copy_button.grid(row=0, column=2, padx=5)
+
+    def tidy_transcript(self) -> None:
         """Tidies up the transcript using AI, with additional user instructions.
-
-        Args:
-            text_widget: The Text widget containing the transcript.
-            instructions_widget: The Text widget containing additional user instructions.
 
         Side effects:
             - Updates the text_widget with the tidied transcript.
+            - Marks changes between the original and tidied transcript.
+            - Stores the previous version for undo functionality.
             - Displays an error message if the AI call fails.
         """
         # Get the current text from the text widget
-        transcript_text = text_widget.get("1.0", tk.END).strip()
+        transcript_text = self.text_widget.get("1.0", tk.END).strip()
 
         # Get additional instructions from the instructions widget
-        additional_instructions = instructions_widget.get("1.0", tk.END).strip()
+        additional_instructions = self.instructions_widget.get("1.0", tk.END).strip()
 
         # Define the assistant's base instructions
         assistant_instructions = (
@@ -282,7 +309,7 @@ class TranscriptionApp:
             assistant = client.beta.assistants.create(
                 name="Transcript Tidy Assistant",
                 instructions=assistant_instructions,
-                model="gpt-4o-mini",
+                model="gpt-3.5-turbo",  # Use a valid model name
             )
 
             # Create a thread
@@ -319,11 +346,11 @@ class TranscriptionApp:
                             if part.type == "text":
                                 reply += part.text.value
 
-                        # Update the text widget with the tidied-up text
-                        text_widget.config(state=tk.NORMAL)
-                        text_widget.delete("1.0", tk.END)
-                        text_widget.insert(tk.END, reply)
-                        text_widget.config(state=tk.DISABLED)
+                        # Store the current transcript before updating
+                        self.previous_transcript = transcript_text
+
+                        # Update the text widget with the tidied-up text and mark changes
+                        self.update_transcript_with_changes(transcript_text, reply)
                         break
             else:
                 messagebox.showerror("Error", f"Run did not complete successfully. Status: {run.status}")
@@ -333,6 +360,72 @@ class TranscriptionApp:
 
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+    def update_transcript_with_changes(self, original: str, updated: str) -> None:
+        """Updates the transcript text widget with the updated text and marks changes.
+
+        Args:
+            original: The original transcript text.
+            updated: The updated transcript text from the AI.
+
+        Side effects:
+            - Applies formatting to the text widget to highlight additions and deletions.
+        """
+        # Clear the text widget
+        self.text_widget.config(state=tk.NORMAL)
+        self.text_widget.delete("1.0", tk.END)
+
+        # Define tags for formatting
+        self.text_widget.tag_configure("addition", font=("Helvetica", 12, "bold"))
+        self.text_widget.tag_configure("deletion", underline=True)
+
+        # Use difflib to compare texts
+        diff = difflib.ndiff(original.split(), updated.split())
+
+        # Keep track of the position in the text widget
+        pos = "1.0"
+
+        for token in diff:
+            code = token[0:2]
+            text = token[2:] + ' '  # Add space back
+
+            if code == '  ':  # No change
+                self.text_widget.insert(pos, text)
+                pos = self.text_widget.index(f"{pos}+{len(text)}c")
+            elif code == '+ ':  # Addition
+                self.text_widget.insert(pos, text, "addition")
+                pos = self.text_widget.index(f"{pos}+{len(text)}c")
+            elif code == '- ':  # Deletion
+                # Underline the preceding character
+                if float(pos) > 1.0:
+                    self.text_widget.tag_add("deletion", f"{pos} -1c", pos)
+            else:
+                # Handle other cases if necessary
+                self.text_widget.insert(pos, text)
+                pos = self.text_widget.index(f"{pos}+{len(text)}c")
+
+        self.text_widget.config(state=tk.NORMAL)  # Keep editable
+
+    def undo_transcript(self) -> None:
+        """Reverts the transcript to the previous version.
+
+        Side effects:
+            - Updates the text_widget with the previous transcript.
+        """
+        if self.previous_transcript:
+            self.text_widget.config(state=tk.NORMAL)
+            self.text_widget.delete("1.0", tk.END)
+            self.text_widget.insert(tk.END, self.previous_transcript)
+            self.text_widget.config(state=tk.NORMAL)  # Keep editable
+        else:
+            messagebox.showinfo("Undo", "No previous version to revert to.")
+
+    def copy_transcript(self) -> None:
+        """Copies the transcript text to the clipboard."""
+        transcript_text = self.text_widget.get("1.0", tk.END).strip()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(transcript_text)
+        messagebox.showinfo("Copy", "Transcript copied to clipboard.")
 
     def clear_files(self) -> None:
         """Clears the list of files to transcribe."""
