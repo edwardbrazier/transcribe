@@ -163,3 +163,4 @@ cython_debug/
 
 out/*
 transcribe/__pycache__/*
+recorded_audio.wav
