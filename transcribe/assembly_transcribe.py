@@ -49,15 +49,19 @@ class TranscriptionApp:
         # Store previous transcript version
         self.previous_transcript = ""
 
+        # Initialize lock for thread-safe operations
+        self.transcribed_files: List[Path] = []
+        self.transcribed_files_lock = threading.Lock()  # Add this line
+
         self.create_widgets()
         self.root.drop_target_register(tkdnd.DND_FILES)
         self.root.dnd_bind('<<Drop>>', self.drop_files)
-        self.transcribed_files: List[Path] = []
 
         # Add keyboard shortcut for recording
         self.root.bind('<Shift-R>', self.toggle_recording)
 
         print("TranscriptionApp initialized.")
+
 
     def create_widgets(self) -> None:
         """Creates and places the widgets in the Tkinter window."""
@@ -400,6 +404,11 @@ class TranscriptionApp:
 
         print("Transcription started.")
 
+        # Start the transcription in a background thread
+        threading.Thread(target=self._transcribe_files_background, args=(files,)).start()
+
+    def _transcribe_files_background(self, files) -> None:
+        """Runs the transcription process in a background thread."""
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(self.transcribe_file, file) for file in files]
             for future in futures:
@@ -417,7 +426,10 @@ class TranscriptionApp:
         with open(output_path, 'w') as f:
             f.write(transcript.text)
 
-        self.transcribed_files.append(output_path)
+        # Use lock when accessing shared data
+        with self.transcribed_files_lock:
+            self.transcribed_files.append(output_path)
+
         print(f"Transcription completed for file: {file_path}")
         return output_path
 
@@ -425,13 +437,20 @@ class TranscriptionApp:
         """Updates the progress bar and adds a 'done' message to the output_area Listbox."""
         try:
             result = future.result()
-            self.progress['value'] += 1
-            self.output_area.insert(tk.END, f"Transcription done: {result}")
-            print(f"Progress updated. Transcription done: {result}")
-            if self.progress['value'] == self.progress['maximum']:
-                self.create_xml_summary()
+            # Schedule the GUI updates to run in the main thread
+            self.root.after(0, self._update_gui_after_transcription, result)
         except Exception as e:
-            messagebox.showerror("Transcription Error", str(e))
+            # Schedule the error message to run in the main thread
+            self.root.after(0, messagebox.showerror, "Transcription Error", str(e))
+
+    def _update_gui_after_transcription(self, result: Path) -> None:
+        """Updates GUI elements after transcription is complete."""
+        self.progress['value'] += 1
+        self.output_area.insert(tk.END, f"Transcription done: {result}")
+        print(f"Progress updated. Transcription done: {result}")
+        if self.progress['value'] == self.progress['maximum']:
+            self.create_xml_summary()
+
 
     def create_xml_summary(self) -> None:
         """Creates an XML file summarizing all transcribed files with their paths and contents."""
